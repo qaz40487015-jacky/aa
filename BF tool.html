@@ -1,0 +1,756 @@
+<script type="text/javascript">
+        var gk_isXlsx = false;
+        var gk_xlsxFileLookup = {};
+        var gk_fileData = {};
+        function filledCell(cell) {
+          return cell !== '' && cell != null;
+        }
+        function loadFileData(filename) {
+        if (gk_isXlsx && gk_xlsxFileLookup[filename]) {
+            try {
+                var workbook = XLSX.read(gk_fileData[filename], { type: 'base64' });
+                var firstSheetName = workbook.SheetNames[0];
+                var worksheet = workbook.Sheets[firstSheetName];
+
+                // Convert sheet to JSON to filter blank rows
+                var jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1, blankrows: false, defval: '' });
+                // Filter out blank rows (rows where all cells are empty, null, or undefined)
+                var filteredData = jsonData.filter(row => row.some(filledCell));
+
+                // Heuristic to find the header row by ignoring rows with fewer filled cells than the next row
+                var headerRowIndex = filteredData.findIndex((row, index) =>
+                  row.filter(filledCell).length >= filteredData[index + 1]?.filter(filledCell).length
+                );
+                // Fallback
+                if (headerRowIndex === -1 || headerRowIndex > 25) {
+                  headerRowIndex = 0;
+                }
+
+                // Convert filtered JSON back to CSV
+                var csv = XLSX.utils.aoa_to_sheet(filteredData.slice(headerRowIndex)); // Create a new sheet from filtered array of arrays
+                csv = XLSX.utils.sheet_to_csv(csv, { header: 1 });
+                return csv;
+            } catch (e) {
+                console.error(e);
+                return "";
+            }
+        }
+        return gk_fileData[filename] || "";
+        }
+        </script><!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Beamforming Simulation</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/mathjs@12.4.2/lib/browser/math.min.js"></script>
+    <script src="https://cdn.plot.ly/plotly-2.34.0.min.js"></script>
+    <style>
+        body { background-color: #ffffff; }
+        .tech-blue { background-color: #1f6aa5; }
+        .tech-blue-hover:hover { background-color: #144870; }
+        .scrollbar-custom::-webkit-scrollbar {
+            width: 8px;
+        }
+        .scrollbar-custom::-webkit-scrollbar-track {
+            background: #f5f5f5;
+        }
+        .scrollbar-custom::-webkit-scrollbar-thumb {
+            background: #1f6aa5;
+            border-radius: 4px;
+        }
+        .scrollbar-custom::-webkit-scrollbar-thumb:hover {
+            background: #144870;
+        }
+        #plot-2d {
+            width: 100%;
+            height: 100%;
+            min-height: 300px;
+        }
+        @media (max-width: 640px) {
+            #control-panel {
+                max-height: 50vh;
+                transition: max-height 0.3s ease-in-out;
+            }
+            #control-panel.hidden {
+                max-height: 0;
+                overflow: hidden;
+            }
+        }
+    </style>
+</head>
+<body class="flex flex-col min-h-screen">
+    <div class="container mx-auto p-2 sm:p-4 flex flex-col md:flex-row h-[calc(100vh-1rem)] md:h-[calc(100vh-2rem)] gap-2">
+        <!-- Toggle Button for Mobile -->
+        <div class="md:hidden flex justify-between items-center bg-[#f5f5f5] p-2 rounded-lg">
+            <h1 class="text-lg sm:text-xl font-bold text-[#1f6aa5]">BEAMFORMING SIMULATION</h1>
+            <button id="toggle-controls-btn" class="px-3 py-1 text-white tech-blue tech-blue-hover rounded text-sm">Toggle Controls</button>
+        </div>
+
+        <!-- Left Control Panel -->
+        <div id="control-panel" class="w-full md:w-1/3 overflow-y-auto scrollbar-custom bg-[#f5f5f5] rounded-lg p-4">
+            <h2 class="text-sm text-[#1f6aa5] mb-4 hidden md:block">Array Pattern Visualizer</h2>
+
+            <!-- Array Configuration -->
+            <div class="bg-white rounded-lg p-3 mb-4">
+                <h3 class="text-sm font-bold text-[#1f6aa5] mb-2">Array Configuration</h3>
+                <div class="space-y-3">
+                    <div class="flex items-center">
+                        <label class="w-32 sm:w-40 text-xs sm:text-sm">XZ Plane Elements (N):</label>
+                        <input id="n-entry" type="number" value="16" class="w-16 sm:w-20 p-2 border rounded text-sm">
+                    </div>
+                    <div class="flex items-center">
+                        <label class="w-32 sm:w-40 text-xs sm:text-sm">YZ Plane Elements (M):</label>
+                        <input id="m-entry" type="number" value="16" class="w-16 sm:w-20 p-2 border rounded text-sm">
+                    </div>
+                    <div class="flex items-center">
+                        <label class="w-32 sm:w-40 text-xs sm:text-sm">Frequency (GHz):</label>
+                        <input id="freq-entry" type="number" step="0.1" value="28" class="w-16 sm:w-20 p-2 border rounded text-sm">
+                    </div>
+                    <div class="flex items-center">
+                        <label class="w-32 sm:w-40 text-xs sm:text-sm">Horizontal Spacing (mm):</label>
+                        <input id="dh-entry" type="number" step="0.1" value="5" class="w-16 sm:w-20 p-2 border rounded text-sm">
+                    </div>
+                    <div class="flex items-center">
+                        <label class="w-32 sm:w-40 text-xs sm:text-sm">Vertical Spacing (mm):</label>
+                        <input id="dv-entry" type="number" step="0.1" value="5" class="w-16 sm:w-20 p-2 border rounded text-sm">
+                    </div>
+                </div>
+            </div>
+
+            <!-- Antenna Control -->
+            <div class="bg-white rounded-lg p-3 mb-4">
+                <h3 class="text-sm font-bold text-[#1f6aa5] mb-2">Antenna Control</h3>
+                <div class="space-y-3">
+                    <div class="flex items-center">
+                        <label class="w-32 sm:w-40 text-xs sm:text-sm">Disabled Rows (e.g. 1,3):</label>
+                        <input id="disabled-rows-entry" type="text" class="w-16 sm:w-20 p-2 border rounded text-sm">
+                    </div>
+                    <div class="flex items-center">
+                        <label class="w-32 sm:w-40 text-xs sm:text-sm">Disabled Columns (e.g. 2,4):</label>
+                        <input id="disabled-cols-entry" type="text" class="w-16 sm:w-20 p-2 border rounded text-sm">
+                    </div>
+                </div>
+            </div>
+
+            <!-- Beam Steering Control -->
+            <div class="bg-white rounded-lg p-3 mb-4">
+                <h3 class="text-sm font-bold text-[#1f6aa5] mb-2">Beam Steering Control</h3>
+                <div class="flex items-center mb-3">
+                    <input id="phase-mode-switch" type="checkbox" class="mr-2">
+                    <label for="phase-mode-switch" class="text-xs sm:text-sm">Phase Difference Mode</label>
+                </div>
+                <div class="space-y-3">
+                    <div class="flex items-center">
+                        <label class="w-32 sm:w-40 text-xs sm:text-sm">XZ Steering (°):</label>
+                        <input id="xz-slider" type="range" min="-90" max="90" value="0" class="w-full sm:w-40 mr-2">
+                        <input id="xz-entry" type="number" step="0.1" value="0" class="w-16 sm:w-16 p-2 border rounded text-sm">
+                    </div>
+                    <div class="flex items-center">
+                        <label class="w-32 sm:w-40 text-xs sm:text-sm">YZ Steering (°):</label>
+                        <input id="yz-slider" type="range" min="-90" max="90" value="0" class="w-full sm:w-40 mr-2">
+                        <input id="yz-entry" type="number" step="0.1" value="0" class="w-16 sm:w-16 p-2 border rounded text-sm">
+                    </div>
+                    <div class="flex items-center">
+                        <label class="w-32 sm:w-40 text-xs sm:text-sm">Gain Degradation:</label>
+                        <input id="q-slider" type="range" min="0.1" max="5.0" step="0.1" value="1.2" class="w-full sm:w-40 mr-2">
+                        <input id="q-entry" type="number" step="0.1" value="1.2" class="w-16 sm:w-16 p-2 border rounded text-sm">
+                    </div>
+                    <div class="flex items-center">
+                        <label class="w-32 sm:w-40 text-xs sm:text-sm">Phase Difference XZ (°):</label>
+                        <input id="xz-phase-entry" type="number" step="0.1" value="0" class="w-16 sm:w-20 p-2 border rounded text-sm" disabled>
+                    </div>
+                    <div class="flex items-center">
+                        <label class="w-32 sm:w-40 text-xs sm:text-sm">Phase Difference YZ (°):</label>
+                        <input id="yz-phase-entry" type="number" step="0.1" value="0" class="w-16 sm:w-20 p-2 border rounded text-sm" disabled>
+                    </div>
+                    <div class="flex items-center mt-4">
+                        <label class="w-32 sm:w-40 text-xs sm:text-sm">Add Steering Set:</label>
+                        <button id="add-steering-btn" class="px-3 sm:px-4 py-1 text-white tech-blue tech-blue-hover rounded text-sm">Add</button>
+                        <button id="clear-steering-btn" class="px-3 sm:px-4 py-1 text-white tech-blue tech-blue-hover rounded ml-2 text-sm">Clear All</button>
+                    </div>
+                    <div>
+                        <span id="steering-sets-display" class="text-xs sm:text-sm">Steering Sets: 0</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Display Settings -->
+            <div class="bg-white rounded-lg p-3 mb-4">
+                <h3 class="text-sm font-bold text-[#1f6aa5] mb-2">Display Settings</h3>
+                <div class="space-y-3">
+                    <div class="flex items-center">
+                        <label class="w-32 sm:w-40 text-xs sm:text-sm">Y-axis Min (dB):</label>
+                        <input id="ymin-entry" type="number" step="1" value="-10" class="w-16 sm:w-20 p-2 border rounded text-sm">
+                    </div>
+                    <div class="flex items-center">
+                        <label class="w-32 sm:w-40 text-xs sm:text-sm">Y-axis Max (dB):</label>
+                        <input id="ymax-entry" type="number" step="1" value="30" class="w-16 sm:w-20 p-2 border rounded text-sm">
+                    </div>
+                    <div class="flex items-center">
+                        <label class="w-32 sm:w-40 text-xs sm:text-sm">X-axis Tick Step (°):</label>
+                        <input id="x-tick-step-entry" type="number" step="1" value="15" class="w-16 sm:w-20 p-2 border rounded text-sm">
+                    </div>
+                    <div class="flex items-center">
+                        <label class="w-32 sm:w-40 text-xs sm:text-sm">Y-axis Tick Step (dB):</label>
+                        <input id="y-tick-step-entry" type="number" step="1" value="5" class="w-16 sm:w-20 p-2 border rounded text-sm">
+                    </div>
+                    <div class="flex items-center">
+                        <label class="w-32 sm:w-40 text-xs sm:text-sm">Display Pattern:</label>
+                        <select id="display-mode" class="w-20 sm:w-20 p-2 border rounded text-sm">
+                            <option value="Both">Both</option>
+                            <option value="XZ Only">XZ Only</option>
+                            <option value="YZ Only">YZ Only</option>
+                        </select>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Buttons -->
+            <div class="bg-white rounded-lg p-3 mb-4">
+                <div class="space-y-3">
+                    <div class="flex space-x-2">
+                        <button id="run-btn" class="flex-1 py-2 text-white tech-blue tech-blue-hover rounded text-sm sm:text-base">Run Simulation</button>
+                        <button id="reset-btn" class="flex-1 py-2 text-white tech-blue tech-blue-hover rounded text-sm sm:text-base">Boresight</button>
+                    </div>
+                    <button id="save-btn" class="w-full py-2 text-white tech-blue tech-blue-hover rounded text-sm sm:text-base">Save Image</button>
+                </div>
+            </div>
+
+            <!-- Custom Gain & Phase Input -->
+            <div class="bg-white rounded-lg p-3 mb-4">
+                <h3 class="text-sm font-bold text-[#1f6aa5] mb-2">Custom Gain & Phase Input (CSV Format)</h3>
+                <div class="flex items-center mb-4">
+                    <input id="custom-data-switch" type="checkbox" class="mr-2">
+                    <label for="custom-data-switch" class="text-xs sm:text-sm">Enable Custom Data</label>
+                </div>
+                <div class="space-y-4">
+                    <div>
+                        <label class="text-xs sm:text-sm text-gray-700">Gain (One Column per Row, Comma Separated)</label>
+                        <textarea id="gain-textbox" class="w-full h-32 sm:h-40 p-2 border rounded font-mono text-xs sm:text-sm"></textarea>
+                    </div>
+                    <div>
+                        <label class="text-xs sm:text-sm text-gray-700">Phase (One Column per Row, Comma Separated)</label>
+                        <textarea id="phase-textbox" class="w-full h-32 sm:h-40 p-2 border rounded font-mono text-xs sm:text-sm"></textarea>
+                    </div>
+                    <div class="flex flex-col sm:flex-row space-y-2 sm:space-y-0 sm:space-x-2">
+                        <button id="sync-custom-btn" class="w-full sm:w-auto px-3 sm:px-4 py-2 text-white tech-blue tech-blue-hover rounded text-sm">Sync to Main</button>
+                        <button id="refresh-custom-btn" class="w-full sm:w-auto px-3 sm:px-4 py-2 text-white tech-blue tech-blue-hover rounded text-sm">Refresh from Main</button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Simulation Results -->
+            <div class="bg-white rounded-lg p-3">
+                <h3 class="text-sm font-bold text-[#1f6aa5] mb-2">Simulation Results</h3>
+                <div id="result-text" class="text-xs sm:text-sm space-y-1">
+                    <p>Max Gain: 0.00 dB</p>
+                    <p>HPBW XZ: 0.00°</p>
+                    <p>HPBW YZ: 0.00°</p>
+                    <p>Phase Difference XZ: 0.00°</p>
+                    <p>Phase Difference YZ: 0.00°</p>
+                    <p>Active Antennas: 0/0</p>
+                </div>
+            </div>
+        </div>
+
+        <!-- Right Visualization Area -->
+        <div class="w-full md:w-2/3 bg-white rounded-lg p-2 sm:p-4 flex flex-col">
+            <h2 class="text-base sm:text-lg font-bold text-[#1f6aa5] mb-2 sm:mb-4">Visualization Results</h2>
+            <div id="plot-2d" class="flex-1"></div>
+        </div>
+    </div>
+
+    <script>
+        // Initialize variables
+        let steeringSets = [];
+        const maxSteeringSets = 9;
+        let customGainData = null;
+        let customPhaseData = null;
+        let useCustomData = false;
+        let lastUpdateTime = 0;
+        const updateDelay = 200;
+        let isDragging = false;
+        let pendingUpdate = null;
+        const calculationCache = {};
+        const cacheMaxSize = 30;
+
+        // Pre-calculated data
+        const thetaDeg = math.range(-90, 90, 0.18).toArray();
+        const thetaRad = thetaDeg.map(deg => deg * Math.PI / 180);
+
+        // DOM elements
+        const elements = {
+            toggleControlsBtn: document.getElementById('toggle-controls-btn'),
+            controlPanel: document.getElementById('control-panel'),
+            nEntry: document.getElementById('n-entry'),
+            mEntry: document.getElementById('m-entry'),
+            freqEntry: document.getElementById('freq-entry'),
+            dhEntry: document.getElementById('dh-entry'),
+            dvEntry: document.getElementById('dv-entry'),
+            disabledRowsEntry: document.getElementById('disabled-rows-entry'),
+            disabledColsEntry: document.getElementById('disabled-cols-entry'),
+            phaseModeSwitch: document.getElementById('phase-mode-switch'),
+            xzSlider: document.getElementById('xz-slider'),
+            xzEntry: document.getElementById('xz-entry'),
+            yzSlider: document.getElementById('yz-slider'),
+            yzEntry: document.getElementById('yz-entry'),
+            qSlider: document.getElementById('q-slider'),
+            qEntry: document.getElementById('q-entry'),
+            xzPhaseEntry: document.getElementById('xz-phase-entry'),
+            yzPhaseEntry: document.getElementById('yz-phase-entry'),
+            addSteeringBtn: document.getElementById('add-steering-btn'),
+            clearSteeringBtn: document.getElementById('clear-steering-btn'),
+            steeringSetsDisplay: document.getElementById('steering-sets-display'),
+            yminEntry: document.getElementById('ymin-entry'),
+            ymaxEntry: document.getElementById('ymax-entry'),
+            xTickStepEntry: document.getElementById('x-tick-step-entry'),
+            yTickStepEntry: document.getElementById('y-tick-step-entry'),
+            displayMode: document.getElementById('display-mode'),
+            runBtn: document.getElementById('run-btn'),
+            resetBtn: document.getElementById('reset-btn'),
+            saveBtn: document.getElementById('save-btn'),
+            resultText: document.getElementById('result-text'),
+            plot2d: document.getElementById('plot-2d'),
+            customDataSwitch: document.getElementById('custom-data-switch'),
+            gainTextbox: document.getElementById('gain-textbox'),
+            phaseTextbox: document.getElementById('phase-textbox'),
+            syncCustomBtn: document.getElementById('sync-custom-btn'),
+            refreshCustomBtn: document.getElementById('refresh-custom-btn'),
+        };
+
+        // Event listeners
+        elements.toggleControlsBtn.addEventListener('click', () => {
+            elements.controlPanel.classList.toggle('hidden');
+        });
+        elements.phaseModeSwitch.addEventListener('change', togglePhaseMode);
+        elements.xzSlider.addEventListener('input', () => onSliderDrag(elements.xzSlider));
+        elements.yzSlider.addEventListener('input', () => onSliderDrag(elements.yzSlider));
+        elements.qSlider.addEventListener('input', () => onSliderDrag(elements.qSlider));
+        elements.xzSlider.addEventListener('change', runSimulation);
+        elements.yzSlider.addEventListener('change', runSimulation);
+        elements.qSlider.addEventListener('change', runSimulation);
+        elements.xzEntry.addEventListener('change', updateSteeringEntry);
+        elements.yzEntry.addEventListener('change', updateSteeringEntry);
+        elements.qEntry.addEventListener('change', updateSteeringEntry);
+        elements.addSteeringBtn.addEventListener('click', addSteeringSet);
+        elements.clearSteeringBtn.addEventListener('click', clearSteeringSets);
+        elements.displayMode.addEventListener('change', updateDisplayMode);
+        elements.runBtn.addEventListener('click', runSimulation);
+        elements.resetBtn.addEventListener('click', resetDefaults);
+        elements.saveBtn.addEventListener('click', saveImage);
+        elements.syncCustomBtn.addEventListener('click', syncCustomTextToMain);
+        elements.refreshCustomBtn.addEventListener('click', refreshCustomTextFromMain);
+        elements.customDataSwitch.addEventListener('change', toggleCustomData);
+        [elements.yminEntry, elements.ymaxEntry, elements.xTickStepEntry, elements.yTickStepEntry].forEach(entry => {
+            entry.addEventListener('change', updateAxisSettings);
+        });
+
+        // Initialize
+        togglePhaseMode();
+        runSimulation();
+
+        function togglePhaseMode() {
+            const state = elements.phaseModeSwitch.checked ? 'normal' : 'disabled';
+            elements.xzPhaseEntry.disabled = !elements.phaseModeSwitch.checked;
+            elements.yzPhaseEntry.disabled = !elements.phaseModeSwitch.checked;
+            elements.xzSlider.disabled = elements.phaseModeSwitch.checked;
+            elements.yzSlider.disabled = elements.phaseModeSwitch.checked;
+            elements.xzEntry.disabled = elements.phaseModeSwitch.checked;
+            elements.yzEntry.disabled = elements.phaseModeSwitch.checked;
+        }
+
+        function onSliderDrag(slider) {
+            isDragging = true;
+            const value = parseFloat(slider.value);
+            if (slider === elements.xzSlider) {
+                elements.xzEntry.value = value.toFixed(1);
+            } else if (slider === elements.yzSlider) {
+                elements.yzEntry.value = value.toFixed(1);
+            } else if (slider === elements.qSlider) {
+                elements.qEntry.value = value.toFixed(2);
+            }
+            const currentTime = Date.now();
+            if (currentTime - lastUpdateTime > updateDelay) {
+                lastUpdateTime = currentTime;
+                if (pendingUpdate) clearTimeout(pendingUpdate);
+                pendingUpdate = setTimeout(runSimulation, 100);
+            }
+        }
+
+        function updateSteeringEntry() {
+            try {
+                elements.xzSlider.value = parseFloat(elements.xzEntry.value);
+                elements.yzSlider.value = parseFloat(elements.yzEntry.value);
+                elements.qSlider.value = parseFloat(elements.qEntry.value);
+                runSimulation();
+            } catch (e) {
+                updateResultText(["Please enter valid values"]);
+            }
+        }
+
+        function parseDisabledElements(input) {
+            if (!input.trim()) return [];
+            try {
+                return input.split(',').map(x => parseInt(x.trim())).filter(x => !isNaN(x));
+            } catch {
+                return [];
+            }
+        }
+
+        function createAntennaMask(M, N, disabledRows, disabledCols) {
+            const mask = Array(M).fill().map(() => Array(N).fill(true));
+            disabledRows.forEach(row => {
+                if (row >= 1 && row <= M) mask[row - 1].fill(false);
+            });
+            disabledCols.forEach(col => {
+                if (col >= 1 && col <= N) {
+                    for (let i = 0; i < M; i++) mask[i][col - 1] = false;
+                }
+            });
+            return mask;
+        }
+
+        function resetDefaults() {
+            elements.xzSlider.value = 0;
+            elements.yzSlider.value = 0;
+            elements.xzEntry.value = "0";
+            elements.yzEntry.value = "0";
+            runSimulation();
+        }
+
+        function arrayToCsv(arr) {
+            return arr.map(row => row.join(',')).join('\n');
+        }
+
+        function csvToArray(text, shape) {
+            const [M, N] = shape;
+            const lines = text.trim().split('\n');
+            const arr = lines.map(line => line.split(',').map(x => parseFloat(x.trim())));
+            const out = Array(M).fill().map(() => Array(N).fill(0));
+            for (let i = 0; i < Math.min(M, arr.length); i++) {
+                for (let j = 0; j < Math.min(N, arr[i].length); j++) {
+                    out[i][j] = arr[i][j];
+                }
+            }
+            return out;
+        }
+
+        function syncCustomTextToMain() {
+            try {
+                const M = parseInt(elements.mEntry.value);
+                const N = parseInt(elements.nEntry.value);
+                customGainData = csvToArray(elements.gainTextbox.value, [M, N]);
+                customPhaseData = csvToArray(elements.phaseTextbox.value, [M, N]);
+                elements.customDataSwitch.checked = true;
+                useCustomData = true;
+                runSimulation();
+            } catch (e) {
+                alert(`Format Error: Please check the format!\n${e}`);
+            }
+        }
+
+        function refreshCustomTextFromMain() {
+            const M = parseInt(elements.mEntry.value);
+            const N = parseInt(elements.nEntry.value);
+            const gain = customGainData && customGainData.length === M && customGainData[0].length === N
+                ? customGainData
+                : Array(M).fill().map(() => Array(N).fill(1));
+            const phase = customPhaseData && customPhaseData.length === M && customPhaseData[0].length === N
+                ? customPhaseData
+                : Array(M).fill().map(() => Array(N).fill(0));
+            elements.gainTextbox.value = arrayToCsv(gain);
+            elements.phaseTextbox.value = arrayToCsv(phase);
+        }
+
+        function toggleCustomData() {
+            useCustomData = elements.customDataSwitch.checked;
+            if (!useCustomData) {
+                customGainData = null;
+                customPhaseData = null;
+            }
+            runSimulation();
+        }
+
+        function addSteeringSet() {
+            if (steeringSets.length >= maxSteeringSets) {
+                updateResultText(["Maximum Steering Sets reached"]);
+                return;
+            }
+            try {
+                const M = parseInt(elements.mEntry.value);
+                const N = parseInt(elements.nEntry.value);
+                const freq = parseFloat(elements.freqEntry.value);
+                const d_h_mm = parseFloat(elements.dhEntry.value);
+                const d_v_mm = parseFloat(elements.dvEntry.value);
+                const q = parseFloat(elements.qSlider.value);
+                const disabledRows = parseDisabledElements(elements.disabledRowsEntry.value);
+                const disabledCols = parseDisabledElements(elements.disabledColsEntry.value);
+                const antennaMask = createAntennaMask(M, N, disabledRows, disabledCols);
+                const c = 0.3;
+                const wavelength = c / freq * 1000;
+                const d_h = d_h_mm / wavelength;
+                const d_v = d_v_mm / wavelength;
+                const k = 2 * Math.PI;
+                let delta_phi_h, delta_phi_v, label_xz, label_yz;
+                if (elements.phaseModeSwitch.checked) {
+                    delta_phi_h = parseFloat(elements.xzPhaseEntry.value) * Math.PI / 180;
+                    delta_phi_v = parseFloat(elements.yzPhaseEntry.value) * Math.PI / 180;
+                    label_xz = `XZ Phase Diff (${parseFloat(elements.xzPhaseEntry.value).toFixed(1)}°)`;
+                    label_yz = `YZ Phase Diff (${parseFloat(elements.yzPhaseEntry.value).toFixed(1)}°)`;
+                } else {
+                    const angle_xz = parseFloat(elements.xzSlider.value);
+                    const angle_yz = parseFloat(elements.yzSlider.value);
+                    delta_phi_h = k * d_h * Math.sin(angle_xz * Math.PI / 180);
+                    delta_phi_v = k * d_v * Math.sin(angle_yz * Math.PI / 180);
+                    label_xz = `XZ (${angle_xz.toFixed(1)}°)`;
+                    label_yz = `YZ (${angle_yz.toFixed(1)}°)`;
+                }
+                const [AF_XZ, AF_YZ] = calculateArrayFactor(M, N, k, d_h, d_v, delta_phi_h, delta_phi_v, thetaRad, antennaMask);
+                const gainDecay = thetaRad.map(theta => Math.max(0, Math.cos(theta) ** q));
+                const AF_XZ_with_decay = AF_XZ.map((val, i) => val * gainDecay[i]);
+                const AF_YZ_with_decay = AF_YZ.map((val, i) => val * gainDecay[i]);
+                const AF_XZ_db = AF_XZ_with_decay.map(val => 10 * Math.log10(val + 1e-10));
+                const AF_YZ_db = AF_YZ_with_decay.map(val => 10 * Math.log10(val + 1e-10));
+                const max_AF_XZ = Math.max(...AF_XZ_db);
+                const max_AF_YZ = Math.max(...AF_YZ_db);
+                const Array_Gain_XZ = AF_XZ_db.map(val => val - max_AF_XZ / 2 + max_AF_YZ / 2);
+                const Array_Gain_YZ = AF_YZ_db.map(val => val - max_AF_YZ / 2 + max_AF_XZ / 2);
+                steeringSets.push({
+                    Array_Gain_XZ: Array_Gain_XZ.slice(),
+                    Array_Gain_YZ: Array_Gain_YZ.slice(),
+                    xz_angle: elements.phaseModeSwitch.checked ? parseFloat(elements.xzPhaseEntry.value) : parseFloat(elements.xzSlider.value),
+                    yz_angle: elements.phaseModeSwitch.checked ? parseFloat(elements.yzPhaseEntry.value) : parseFloat(elements.yzSlider.value),
+                    label_xz,
+                    label_yz
+                });
+                elements.steeringSetsDisplay.textContent = `Steering Sets: ${steeringSets.length}`;
+                runSimulation();
+            } catch (e) {
+                updateResultText(["Please enter valid angle values"]);
+            }
+        }
+
+        function clearSteeringSets() {
+            steeringSets = [];
+            elements.steeringSetsDisplay.textContent = "Steering Sets: 0";
+            runSimulation();
+        }
+
+        function updateResultText(textList) {
+            elements.resultText.innerHTML = textList.map(text => `<p>${text}</p>`).join('');
+        }
+
+        function calculateArrayFactor(M, N, k, d_h, d_v, delta_phi_h, delta_phi_v, theta_rad, antenna_mask) {
+            const activePositions = [];
+            for (let i = 0; i < M; i++) {
+                for (let j = 0; j < N; j++) {
+                    if (antenna_mask[i][j]) activePositions.push([i, j]);
+                }
+            }
+            if (activePositions.length === 0) return [theta_rad.map(() => 0), theta_rad.map(() => 0)];
+            let AF_XZ = Array(theta_rad.length).fill(math.complex(0, 0));
+            let AF_YZ = Array(theta_rad.length).fill(math.complex(0, 0));
+            for (const [m, n] of activePositions) {
+                const phase_h = theta_rad.map(theta => n * (k * d_h * Math.sin(theta) - delta_phi_h));
+                const phase_v = theta_rad.map(theta => m * (k * d_v * Math.sin(theta) - delta_phi_v));
+                if (useCustomData && customGainData && customPhaseData) {
+                    const gain = customGainData[m][n];
+                    const phase = customPhaseData[m][n] * Math.PI / 180;
+                    const complexPhase = math.complex({ r: gain, phi: phase });
+                    for (let i = 0; i < theta_rad.length; i++) {
+                        AF_XZ[i] = math.add(AF_XZ[i], math.multiply(complexPhase, math.exp(math.complex(0, phase_h[i]))));
+                        AF_YZ[i] = math.add(AF_YZ[i], math.multiply(complexPhase, math.exp(math.complex(0, phase_v[i]))));
+                    }
+                } else {
+                    for (let i = 0; i < theta_rad.length; i++) {
+                        AF_XZ[i] = math.add(AF_XZ[i], math.exp(math.complex(0, phase_h[i])));
+                        AF_YZ[i] = math.add(AF_YZ[i], math.exp(math.complex(0, phase_v[i])));
+                    }
+                }
+            }
+            return [AF_XZ.map(z => math.abs(z)), AF_YZ.map(z => math.abs(z))];
+        }
+
+        function calculateHPBW(pattern_db, theta_deg, max_gain) {
+            const half_power = max_gain - 3;
+            const indices = pattern_db.reduce((acc, val, i) => {
+                if (val >= half_power) acc.push(i);
+                return acc;
+            }, []);
+            return indices.length > 0 ? theta_deg[indices[indices.length - 1]] - theta_deg[indices[0]] : 0;
+        }
+
+        function updateAxisSettings() {
+            runSimulation();
+        }
+
+        function updateDisplayMode() {
+            runSimulation();
+        }
+
+        function updatePlots(Array_Gain_XZ, Array_Gain_YZ, ymin, ymax) {
+            const traces2d = [];
+            const displayMode = elements.displayMode.value;
+            if (displayMode === 'Both' || displayMode === 'XZ Only') {
+                traces2d.push({
+                    x: thetaDeg,
+                    y: Array_Gain_XZ,
+                    name: 'XZ Pattern',
+                    line: { color: '#2fa4ff', width: 2.5 }
+                });
+            }
+            if (displayMode === 'Both' || displayMode === 'YZ Only') {
+                traces2d.push({
+                    x: thetaDeg,
+                    y: Array_Gain_YZ,
+                    name: 'YZ Pattern',
+                    line: { color: '#00cc66', width: 2.5 }
+                });
+            }
+            const colors = ['#ff5733', '#ffcc00', '#9933ff'];
+            const lineStyles = ['dash', 'dot', 'dashdot'];
+            steeringSets.forEach((set, idx) => {
+                const color = colors[idx % colors.length];
+                const lineStyle = lineStyles[idx % lineStyles.length];
+                if (displayMode === 'Both' || displayMode === 'XZ Only') {
+                    traces2d.push({
+                        x: thetaDeg,
+                        y: set.Array_Gain_XZ,
+                        name: set.label_xz,
+                        line: { color, dash: lineStyle, width: 1.5 }
+                    });
+                }
+                if (displayMode === 'Both' || displayMode === 'YZ Only') {
+                    traces2d.push({
+                        x: thetaDeg,
+                        y: set.Array_Gain_YZ,
+                        name: set.label_yz,
+                        line: { color, dash: lineStyle, width: 1.5 }
+                    });
+                }
+            });
+            const xTickStep = parseFloat(elements.xTickStepEntry.value) || 15;
+            const yTickStep = parseFloat(elements.yTickStepEntry.value) || 5;
+            const xTicks = math.range(-90, 91, xTickStep).toArray();
+            const yTicks = math.range(Math.floor(ymin), Math.ceil(ymax) + 1, yTickStep).toArray();
+            const layout2d = {
+                title: { text: 'Radiation Pattern', font: { size: window.innerWidth < 640 ? 14 : 16, color: 'black' } },
+                xaxis: { 
+                    title: 'Theta (deg)', 
+                    range: [-90, 90], 
+                    tickvals: xTicks, 
+                    tickfont: { size: window.innerWidth < 640 ? 10 : 12, color: 'black' }, 
+                    gridcolor: '#4a6583' 
+                },
+                yaxis: { 
+                    title: 'Gain (dB)', 
+                    range: [ymin, ymax], 
+                    tickvals: yTicks, 
+                    tickfont: { size: window.innerWidth < 640 ? 10 : 12, color: 'black' }, 
+                    gridcolor: '#4a6583' 
+                },
+                showlegend: true,
+                legend: { 
+                    x: 1, 
+                    y: 1, 
+                    xanchor: 'right', 
+                    yanchor: 'top', 
+                    font: { size: window.innerWidth < 640 ? 10 : 12 } 
+                },
+                margin: { l: 40, r: 40, t: 40, b: 40 },
+                plot_bgcolor: '#ffffff',
+                paper_bgcolor: '#ffffff',
+                autosize: true
+            };
+            const config = {
+                responsive: true,
+                displayModeBar: true,
+                modeBarButtonsToRemove: ['toImage'],
+                scrollZoom: true
+            };
+            Plotly.newPlot(elements.plot2d, traces2d, layout2d, config);
+        }
+
+        function saveImage() {
+            Plotly.downloadImage(elements.plot2d, {
+                filename: `beam_pattern_${new Date().toISOString().replace(/[-:T]/g, '').split('.')[0]}`,
+                format: 'png',
+                width: window.innerWidth < 640 ? 600 : 1200,
+                height: window.innerWidth < 640 ? 400 : 800
+            }).then(() => {
+                const currentText = Array.from(elements.resultText.children).map(p => p.textContent);
+                currentText.push('Image saved');
+                updateResultText(currentText);
+            }).catch(e => {
+                const currentText = Array.from(elements.resultText.children).map(p => p.textContent);
+                currentText.push(`Save failed: ${e}`);
+                updateResultText(currentText);
+            });
+        }
+
+        function runSimulation() {
+            try {
+                isDragging = false;
+                if (pendingUpdate) clearTimeout(pendingUpdate);
+                const M = parseInt(elements.mEntry.value);
+                const N = parseInt(elements.nEntry.value);
+                const freq = parseFloat(elements.freqEntry.value);
+                const d_h_mm = parseFloat(elements.dhEntry.value);
+                const d_v_mm = parseFloat(elements.dvEntry.value);
+                const ymin = parseFloat(elements.yminEntry.value);
+                const ymax = parseFloat(elements.ymaxEntry.value);
+                const q = parseFloat(elements.qSlider.value);
+                const disabledRows = parseDisabledElements(elements.disabledRowsEntry.value);
+                const disabledCols = parseDisabledElements(elements.disabledColsEntry.value);
+                const antennaMask = createAntennaMask(M, N, disabledRows, disabledCols);
+                const activeAntennas = antennaMask.flat().filter(x => x).length;
+                const totalAntennas = M * N;
+                const c = 0.3;
+                const wavelength = c / freq * 1000;
+                const d_h = d_h_mm / wavelength;
+                const d_v = d_v_mm / wavelength;
+                const k = 2 * Math.PI;
+                let delta_phi_h, delta_phi_v;
+                if (elements.phaseModeSwitch.checked) {
+                    delta_phi_h = parseFloat(elements.xzPhaseEntry.value) * Math.PI / 180;
+                    delta_phi_v = parseFloat(elements.yzPhaseEntry.value) * Math.PI / 180;
+                } else {
+                    const angle_xz = parseFloat(elements.xzSlider.value);
+                    const angle_yz = parseFloat(elements.yzSlider.value);
+                    delta_phi_h = k * d_h * Math.sin(angle_xz * Math.PI / 180);
+                    delta_phi_v = k * d_v * Math.sin(angle_yz * Math.PI / 180);
+                }
+                const [AF_XZ, AF_YZ] = calculateArrayFactor(M, N, k, d_h, d_v, delta_phi_h, delta_phi_v, thetaRad, antennaMask);
+                const gainDecay = thetaRad.map(theta => Math.max(0, Math.cos(theta) ** q));
+                const AF_XZ_with_decay = AF_XZ.map((val, i) => val * gainDecay[i]);
+                const AF_YZ_with_decay = AF_YZ.map((val, i) => val * gainDecay[i]);
+                const AF_XZ_db = AF_XZ_with_decay.map(val => 10 * Math.log10(val + 1e-10));
+                const AF_YZ_db = AF_YZ_with_decay.map(val => 10 * Math.log10(val + 1e-10));
+                const max_AF_XZ = Math.max(...AF_XZ_db);
+                const max_AF_YZ = Math.max(...AF_YZ_db);
+                const Array_Gain_XZ = AF_XZ_db.map(val => val - max_AF_XZ / 2 + max_AF_YZ / 2);
+                const Array_Gain_YZ = AF_YZ_db.map(val => val - max_AF_YZ / 2 + max_AF_XZ / 2);
+                const max_AF = max_AF_XZ / 2 + max_AF_YZ / 2;
+                const HPBW_XZ = calculateHPBW(AF_XZ_db, thetaDeg, max_AF_XZ);
+                const HPBW_YZ = calculateHPBW(AF_YZ_db, thetaDeg, max_AF_YZ);
+                updatePlots(Array_Gain_XZ, Array_Gain_YZ, ymin, ymax);
+                const resultText = [
+                    `Max Gain: ${max_AF.toFixed(2)} dB`,
+                    `HPBW XZ: ${HPBW_XZ.toFixed(2)}°`,
+                    `HPBW YZ: ${HPBW_YZ.toFixed(2)}°`,
+                    `Phase Difference XZ: ${(delta_phi_h * 180 / Math.PI).toFixed(2)}°`,
+                    `Phase Difference YZ: ${(delta_phi_v * 180 / Math.PI).toFixed(2)}°`,
+                    `Active Antennas: ${activeAntennas}/${totalAntennas}`
+                ];
+                if (disabledRows.length) resultText.push(`Disabled Rows: ${disabledRows.join(', ')}`);
+                if (disabledCols.length) resultText.push(`Disabled Columns: ${disabledCols.join(', ')}`);
+                updateResultText(resultText);
+            } catch (e) {
+                updateResultText([`Error: ${e.message}`]);
+            }
+        }
+    </script>
+</body>
+</html>
